@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Historical World Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+      * { margin:0; padding:0; box-sizing:border-box; }
+      body { background:#050a18; overflow:hidden; font-family:'Segoe UI',system-ui,sans-serif; color:#e0e8ff; user-select:none; }
+
+      #map { position:fixed; inset:0; }
+      /* Satellite pane — no filter, natural imagery colors */
+      .leaflet-satellite-pane {}
+      /* Leaflet controls */
+      .leaflet-control-zoom { display:none; }
+      .leaflet-control-attribution { font-size:8px !important; opacity:0.35; background:transparent !important; color:#8899bb !important; }
+      .leaflet-control-attribution a { color:#8899bb !important; }
+
+      /* ── Event marker ──────────────────────────────────────── */
+      .ev-wrap { position:relative; width:100%; height:100%; }
+      .ev-dot {
+        position:absolute; top:50%; left:50%;
+        transform:translate(-50%,-50%);
+        border-radius:50%; z-index:2; cursor:pointer;
+        border:2px solid rgba(255,255,255,0.7);
+        transition:transform 0.15s, box-shadow 0.15s;
+      }
+      .ev-dot:hover { transform:translate(-50%,-50%) scale(1.6); }
+      .ev-pulse {
+        position:absolute; top:50%; left:50%;
+        transform:translate(-50%,-50%) scale(1);
+        width:10px; height:10px; border-radius:50%;
+        animation:evPulse 2.8s ease-out infinite;
+        pointer-events:none;
+      }
+      @keyframes evPulse {
+        0%   { transform:translate(-50%,-50%) scale(1);   opacity:0.75; }
+        100% { transform:translate(-50%,-50%) scale(6.5); opacity:0; }
+      }
+      .ev-movement { animation:marchAnts 1.8s linear infinite; }
+      @keyframes marchAnts { to { stroke-dashoffset:-36; } }
+
+      /* ── World-glow: SVG rect covering the globe for global-scale events ── */
+      .world-glow-rect { transition: fill 1.6s ease, fill-opacity 1.6s ease; }
+
+      /* ── Overlays ─────────────────────────────────────────── */
+      #title-badge {
+        position:fixed; top:16px; left:50%; transform:translateX(-50%);
+        background:rgba(5,10,24,0.85); border:1px solid rgba(100,140,255,0.2);
+        border-radius:30px; padding:7px 20px;
+        font-size:12px; font-weight:600; letter-spacing:.1em; color:#9ab4ff;
+        backdrop-filter:blur(10px); pointer-events:none; white-space:nowrap; z-index:500;
+      }
+      #legend {
+        position:fixed; top:16px; left:16px;
+        background:rgba(5,10,24,0.88); border:1px solid rgba(100,140,255,0.16);
+        border-radius:12px; padding:11px 15px; backdrop-filter:blur(12px); min-width:168px; z-index:500;
+      }
+      #legend-title { font-size:9px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:rgba(140,165,230,.45); margin-bottom:9px; }
+      .legend-item { display:flex; align-items:center; gap:8px; margin-bottom:6px; font-size:11px; color:rgba(200,215,255,.7); }
+      .legend-item:last-of-type { margin-bottom:0; }
+      .legend-dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+      #reset-btn {
+        display:block; width:100%; margin-top:10px; padding:4px 0; font-size:10px; font-weight:600;
+        letter-spacing:.07em; text-align:center; border:1px solid rgba(100,140,255,0.2);
+        border-radius:6px; background:rgba(100,140,255,.07); color:rgba(160,190,255,.5);
+        cursor:pointer; transition:all .15s; font-family:inherit;
+      }
+      #reset-btn:hover { background:rgba(100,140,255,.15); color:#9ab4ff; border-color:rgba(100,140,255,.4); }
+
+      #zoom-hint { position:fixed; bottom:210px; right:16px; font-size:10px; color:rgba(140,165,230,.3); text-align:right; pointer-events:none; line-height:1.7; z-index:500; }
+
+      #event-count {
+        position:fixed; top:16px; right:16px; z-index:500;
+        background:rgba(5,10,24,0.88); border:1px solid rgba(100,140,255,0.16);
+        border-radius:12px; padding:9px 15px; backdrop-filter:blur(12px); text-align:center; min-width:80px; pointer-events:none;
+      }
+      #event-count-num { font-size:24px; font-weight:700; color:#fff; line-height:1; }
+      #event-count-label { font-size:9px; letter-spacing:.1em; text-transform:uppercase; color:rgba(140,165,230,.45); margin-top:3px; }
+
+      /* ── Detail panel ─────────────────────────────────────── */
+      #detail-panel {
+        position:fixed; top:0; right:-440px; width:420px; height:100%;
+        background:rgba(4,9,25,0.97); border-left:1px solid rgba(100,140,255,0.18);
+        z-index:600; display:flex; flex-direction:column;
+        box-shadow:-20px 0 60px rgba(0,0,40,0.6);
+        transition:right 0.32s cubic-bezier(.25,.8,.25,1);
+        backdrop-filter:blur(16px);
+      }
+      #detail-panel.open { right:0; }
+      #dp-color-bar { height:4px; flex-shrink:0; transition:background 0.3s; }
+      #dp-close-row {
+        display:flex; justify-content:flex-end; padding:10px 14px 0;
+        flex-shrink:0;
+      }
+      #dp-close {
+        width:28px; height:28px; border-radius:50%; border:1px solid rgba(100,140,255,0.2);
+        background:rgba(100,140,255,0.07); color:#9ab4ff; cursor:pointer;
+        display:flex; align-items:center; justify-content:center; font-size:14px; transition:all .15s;
+      }
+      #dp-close:hover { background:rgba(100,140,255,.22); }
+      #dp-scroll { flex:1; overflow-y:auto; padding:0 20px 30px; }
+      #dp-scroll::-webkit-scrollbar { width:4px; }
+      #dp-scroll::-webkit-scrollbar-track { background:transparent; }
+      #dp-scroll::-webkit-scrollbar-thumb { background:rgba(100,140,255,.22); border-radius:4px; }
+
+      #dp-img-wrap { margin:14px 0 0; border-radius:10px; overflow:hidden; position:relative; min-height:40px; }
+      #dp-img { width:100%; display:none; max-height:200px; object-fit:cover; }
+      #dp-img-caption { font-size:10px; color:rgba(140,165,230,.38); padding:5px 0 0; font-style:italic; }
+      #dp-img-loading { font-size:11px; color:rgba(140,165,230,.3); padding:8px 0; display:none; }
+
+      /* ── Media: video button + inline embed ─────────────────────── */
+      #dp-video-wrap { margin:10px 0 0; display:none; }
+      #dp-video-btn {
+        display:flex; align-items:center; gap:8px;
+        width:100%; padding:9px 14px; box-sizing:border-box;
+        background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.13);
+        border-radius:8px; color:#c8d4f0; font-size:12.5px; cursor:pointer;
+        transition:background .18s, border-color .18s; text-align:left;
+      }
+      #dp-video-btn:hover { background:rgba(255,255,255,0.11); border-color:rgba(255,255,255,0.22); }
+      #dp-video-btn .dp-vbtn-icon {
+        width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+        background:rgba(220,60,60,0.85); font-size:10px; flex-shrink:0; color:#fff;
+      }
+      #dp-video-embed {
+        display:none; margin-top:9px;
+        position:relative; padding-bottom:56.25%; height:0;
+        border-radius:8px; overflow:hidden; background:#000;
+      }
+      #dp-video-embed.open { display:block; }
+      #dp-video-iframe { position:absolute; top:0; left:0; width:100%; height:100%; border:none; }
+
+      #dp-hero { padding:14px 0 10px; border-bottom:1px solid rgba(100,140,255,.1); }
+      #dp-type-badge { display:inline-block; font-size:9px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; padding:3px 8px; border-radius:20px; margin-bottom:8px; }
+      #dp-name { font-size:17px; font-weight:700; color:#fff; line-height:1.25; margin-bottom:5px; }
+      #dp-period-text { font-size:11px; color:rgba(180,200,255,.45); }
+
+      .dp-section { margin-top:18px; }
+      .dp-sec-hdr { font-size:9px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:rgba(130,158,230,.4); margin-bottom:8px; display:flex; align-items:center; gap:6px; }
+      .dp-sec-hdr::after { content:''; flex:1; height:1px; background:rgba(100,140,255,.1); }
+      .dp-overview-text { font-size:12.5px; line-height:1.7; color:rgba(210,222,255,.78); }
+      .dp-people-grid { display:flex; flex-direction:column; gap:7px; }
+      .dp-person { display:flex; flex-direction:column; padding:8px 12px; background:rgba(100,140,255,.07); border-radius:8px; }
+      .dp-person-name { font-size:12px; font-weight:600; color:rgba(220,230,255,.9); }
+      .dp-person-role { font-size:10.5px; color:rgba(150,175,230,.5); margin-top:1px; }
+      .dp-tl-list { display:flex; flex-direction:column; gap:0; }
+      .dp-tl-item { display:flex; gap:10px; padding:7px 0; border-bottom:1px solid rgba(100,140,255,.07); }
+      .dp-tl-item:last-child { border-bottom:none; }
+      .dp-tl-date { font-size:10px; font-weight:600; color:rgba(150,175,230,.5); white-space:nowrap; min-width:70px; padding-top:1px; }
+      .dp-tl-evt { font-size:12px; color:rgba(200,215,255,.78); line-height:1.45; }
+      .dp-bullet-list { list-style:none; display:flex; flex-direction:column; gap:6px; }
+      .dp-bullet-list li { font-size:12px; color:rgba(200,215,255,.72); line-height:1.5; padding-left:14px; position:relative; }
+      .dp-bullet-list li::before { content:'▸'; position:absolute; left:0; color:rgba(100,140,255,.45); font-size:10px; top:2px; }
+
+      /* ── Empires browse overlay ──────────────────────────── */
+      #empires-overlay {
+        position:fixed; inset:0; z-index:710;
+        background:rgba(0,3,18,0.7); backdrop-filter:blur(6px);
+        display:flex; align-items:center; justify-content:center;
+        opacity:0; pointer-events:none; transition:opacity .2s ease;
+      }
+      #empires-overlay.open { opacity:1; pointer-events:all; }
+      #empires-panel {
+        background:rgba(4,10,28,0.98); border:1px solid rgba(80,180,120,0.22);
+        border-radius:20px; width:min(680px,92vw); height:min(78vh,660px);
+        display:flex; flex-direction:column; box-shadow:0 24px 70px rgba(0,20,60,0.7);
+        overflow:hidden; transform:translateY(10px); transition:transform .2s ease;
+      }
+      #empires-overlay.open #empires-panel { transform:translateY(0); }
+      #emp-hdr {
+        display:flex; align-items:center; justify-content:space-between;
+        padding:16px 20px 12px; border-bottom:1px solid rgba(80,180,120,.11); flex-shrink:0;
+      }
+      #emp-hdr-left { display:flex; flex-direction:column; gap:3px; }
+      #emp-title { font-size:14px; font-weight:700; color:#aaeedd; letter-spacing:.04em; }
+      #emp-subtitle { font-size:10px; color:rgba(140,200,170,.42); letter-spacing:.06em; }
+      #emp-close {
+        width:28px; height:28px; border-radius:50%; border:1px solid rgba(80,180,120,.22);
+        background:rgba(80,180,120,.07); color:#7ecfaa; cursor:pointer;
+        display:flex; align-items:center; justify-content:center; font-size:14px;
+        transition:all .15s; flex-shrink:0;
+      }
+      #emp-close:hover { background:rgba(80,180,120,.22); }
+      #emp-search-wrap {
+        padding:11px 16px 10px; border-bottom:1px solid rgba(80,180,120,.09); flex-shrink:0;
+      }
+      #emp-search {
+        width:100%; box-sizing:border-box;
+        background:rgba(80,180,120,.07); border:1px solid rgba(80,180,120,.16);
+        border-radius:10px; padding:8px 13px; font-size:12px; color:#aaeedd;
+        outline:none; font-family:inherit; transition:border-color .15s;
+      }
+      #emp-search:focus { border-color:rgba(80,180,120,.42); }
+      #emp-search::placeholder { color:rgba(80,180,120,.3); }
+      #emp-grid {
+        flex:1; overflow-y:auto; padding:14px 14px 24px;
+        display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:9px;
+        align-content:start;
+      }
+      #emp-grid::-webkit-scrollbar { width:4px; }
+      #emp-grid::-webkit-scrollbar-thumb { background:rgba(80,180,120,.22); border-radius:4px; }
+      .emp-card {
+        display:flex; align-items:flex-start; gap:10px;
+        padding:10px 12px; border-radius:12px; cursor:pointer;
+        background:rgba(80,180,120,.04); border:1px solid rgba(80,180,120,.12);
+        transition:all .15s;
+      }
+      .emp-card:hover { background:rgba(80,180,120,.13); border-color:rgba(80,180,120,.35); transform:translateY(-1px); }
+      .emp-card.selected { background:rgba(80,180,120,.18); border-color:rgba(80,180,120,.55); }
+      .emp-swatch { width:10px; height:10px; border-radius:50%; flex-shrink:0; margin-top:3px; }
+      .emp-info { display:flex; flex-direction:column; gap:2px; min-width:0; }
+      .emp-name { font-size:11.5px; font-weight:700; color:#d4eee4; line-height:1.3; }
+      .emp-period { font-size:9.5px; color:rgba(120,190,150,.5); }
+      #emp-no-results { grid-column:1/-1; font-size:11px; color:rgba(120,180,150,.3); padding:28px; text-align:center; }
+
+      /* ── Events browser ───────────────────────────────────── */
+      #events-overlay {
+        position:fixed; inset:0; z-index:700;
+        background:rgba(0,3,18,0.65); backdrop-filter:blur(5px);
+        display:flex; align-items:center; justify-content:center;
+        opacity:0; pointer-events:none; transition:opacity .2s ease;
+      }
+      #events-overlay.open { opacity:1; pointer-events:all; }
+      #events-panel {
+        background:rgba(5,10,28,0.98); border:1px solid rgba(100,140,255,0.2);
+        border-radius:20px; width:min(440px,92vw); height:min(76vh,640px);
+        display:flex; flex-direction:column; box-shadow:0 24px 70px rgba(0,0,60,0.65);
+        overflow:hidden; transform:translateY(10px); transition:transform .2s ease;
+      }
+      #events-overlay.open #events-panel { transform:translateY(0); }
+      #ep-hdr { display:flex; align-items:center; justify-content:space-between; padding:16px 20px 12px; border-bottom:1px solid rgba(100,140,255,.11); flex-shrink:0; }
+      #ep-hdr-left { display:flex; flex-direction:column; gap:2px; }
+      #ep-title { font-size:14px; font-weight:700; color:#c0d4ff; letter-spacing:.04em; }
+      #ep-subtitle { font-size:10px; color:rgba(140,165,230,.4); letter-spacing:.07em; }
+      #ep-close { width:28px; height:28px; border-radius:50%; border:1px solid rgba(100,140,255,.2); background:rgba(100,140,255,.07); color:#9ab4ff; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:14px; transition:all .15s; flex-shrink:0; }
+      #ep-close:hover { background:rgba(100,140,255,.2); }
+      #ep-search-wrap { padding:11px 16px; border-bottom:1px solid rgba(100,140,255,.09); flex-shrink:0; }
+      #ep-search { width:100%; background:rgba(100,140,255,.07); border:1px solid rgba(100,140,255,.16); border-radius:10px; padding:8px 13px; font-size:12px; color:#c0d4ff; outline:none; font-family:inherit; transition:border-color .15s; }
+      #ep-search::placeholder { color:rgba(140,165,230,.32); }
+      #ep-search:focus { border-color:rgba(100,140,255,.42); }
+      #ep-list { flex:1; overflow-y:auto; padding:6px 8px 18px; }
+      #ep-list::-webkit-scrollbar { width:4px; }
+      #ep-list::-webkit-scrollbar-track { background:transparent; }
+      #ep-list::-webkit-scrollbar-thumb { background:rgba(100,140,255,.22); border-radius:4px; }
+      .ep-era-hdr { font-size:9px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:rgba(130,158,230,.36); padding:12px 12px 4px; }
+      .ep-item { display:flex; align-items:flex-start; gap:10px; padding:8px 12px; border-radius:10px; cursor:pointer; transition:background .12s; }
+      .ep-item:hover { background:rgba(100,140,255,.1); }
+      .ep-dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; margin-top:3px; }
+      .ep-name { font-size:12px; font-weight:600; color:rgba(210,225,255,.85); line-height:1.3; }
+      .ep-period { font-size:10px; color:rgba(140,165,230,.42); margin-top:1px; }
+      #ep-no-results { text-align:center; padding:30px; font-size:12px; color:rgba(140,165,230,.3); display:none; }
+
+      /* ── Timeline panel ───────────────────────────────────── */
+      #ui-overlay { position:fixed; inset:0; pointer-events:none; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; padding-bottom:20px; z-index:500; }
+      #timeline-panel {
+        pointer-events:all; background:rgba(5,10,24,0.92);
+        border:1px solid rgba(100,140,255,0.2); border-radius:16px;
+        padding:15px 24px 17px; width:min(720px,94vw);
+        backdrop-filter:blur(16px); box-shadow:0 8px 40px rgba(0,0,60,0.5);
+      }
+      #timeline-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:11px; }
+      #timeline-title { font-size:10px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:#7ba3ff; }
+      #follow-thread-btn {
+        background:rgba(160,80,255,0.12); border:1px solid rgba(160,80,255,0.35);
+        color:#c080ff; border-radius:8px; padding:4px 11px; font-size:11px;
+        font-weight:600; cursor:pointer; font-family:inherit; transition:all .15s;
+        white-space:nowrap;
+      }
+      #follow-thread-btn:hover { background:rgba(160,80,255,0.25); color:#d4a0ff; }
+      #follow-thread-btn.following { background:rgba(160,80,255,0.28); border-color:rgba(160,80,255,0.6); color:#e0b8ff; }
+      #browse-btn { font-size:10px; font-weight:600; padding:4px 11px; border-radius:20px; border:1px solid rgba(100,140,255,.28); background:rgba(100,140,255,.1); color:#9ab4ff; cursor:pointer; transition:all .15s; font-family:inherit; letter-spacing:.05em; }
+      #browse-btn:hover { background:rgba(100,140,255,.2); color:#c0d4ff; }
+      #nations-btn { font-size:10px; font-weight:600; padding:4px 11px; border-radius:20px; border:1px solid rgba(80,180,120,.32); background:rgba(80,180,120,.1); color:#7ecfaa; cursor:pointer; transition:all .15s; font-family:inherit; letter-spacing:.05em; }
+      #nations-btn:hover { background:rgba(80,180,120,.22); color:#aaeedd; }
+      #nations-btn.open { background:rgba(80,180,120,.25); border-color:rgba(80,180,120,.6); color:#aaeedd; }
+
+      /* ── Country Panel ────────────────────────────────────────────── */
+      #country-panel {
+        position:fixed; top:0; left:-360px; width:340px; height:100%;
+        background:rgba(4,9,25,0.97); border-right:1px solid rgba(80,180,120,0.2);
+        z-index:590; display:flex; flex-direction:column;
+        box-shadow:20px 0 60px rgba(0,0,40,0.5);
+        transition:left 0.32s cubic-bezier(.25,.8,.25,1);
+        backdrop-filter:blur(16px);
+      }
+      #country-panel.open { left:0; }
+      #cp-color-bar { height:4px; flex-shrink:0; background:linear-gradient(90deg,#b22234,#3c3b6e); }
+      #cp-close-row { display:flex; justify-content:flex-end; padding:10px 14px 0; flex-shrink:0; }
+      #cp-close {
+        width:28px; height:28px; border-radius:50%; border:1px solid rgba(80,180,120,0.25);
+        background:rgba(80,180,120,0.07); color:#7ecfaa; cursor:pointer;
+        display:flex; align-items:center; justify-content:center; font-size:14px; transition:all .15s;
+      }
+      #cp-close:hover { background:rgba(80,180,120,.22); }
+      #cp-scroll { flex:1; overflow-y:auto; padding:0 20px 30px; }
+      #cp-scroll::-webkit-scrollbar { width:4px; }
+      #cp-scroll::-webkit-scrollbar-thumb { background:rgba(80,180,120,.2); border-radius:4px; }
+
+      #cp-hero { padding:12px 0 14px; border-bottom:1px solid rgba(80,180,120,.12); }
+      #cp-flag  { font-size:36px; line-height:1; margin-bottom:6px; }
+      #cp-country-name { font-size:18px; font-weight:700; color:#fff; }
+      #cp-year-ctx { font-size:11px; color:rgba(140,210,180,.5); margin-top:3px; }
+
+      .cp-section { padding:16px 0 0; border-bottom:1px solid rgba(80,180,120,.08); }
+      .cp-section:last-child { border-bottom:none; }
+      .cp-sec-hdr {
+        font-size:9px; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
+        color:rgba(80,180,120,.55); margin-bottom:10px;
+      }
+      #cp-president-name { font-size:16px; font-weight:700; color:#e8f4ee; margin-bottom:4px; }
+      #cp-president-term { font-size:11px; color:rgba(160,220,190,.45); margin-bottom:8px; }
+      .cp-party-badge {
+        display:inline-block; font-size:9px; font-weight:700; letter-spacing:.1em;
+        text-transform:uppercase; padding:2px 8px; border-radius:20px;
+      }
+      #cp-president-note { font-size:11px; color:rgba(160,220,190,.45); font-style:italic; margin-top:4px; }
+
+      #cp-population-num { font-size:22px; font-weight:700; color:#e8f4ee; margin-bottom:8px; }
+      #cp-pop-bar-wrap { height:6px; background:rgba(255,255,255,.06); border-radius:3px; margin-bottom:6px; overflow:hidden; }
+      #cp-pop-bar { height:100%; background:linear-gradient(90deg,#3c3b6e,#b22234); border-radius:3px; transition:width 0.8s ease; width:0%; }
+      #cp-pop-note { font-size:10px; color:rgba(160,220,190,.4); }
+
+      #cp-era-badge {
+        display:inline-block; margin-top:14px; padding:4px 12px;
+        background:rgba(80,180,120,.08); border:1px solid rgba(80,180,120,.18);
+        border-radius:20px; font-size:10px; color:rgba(160,220,190,.7); font-weight:600;
+      }
+      #year-display { font-size:22px; font-weight:700; color:#fff; letter-spacing:.03em; min-width:110px; text-align:right; }
+      #hub-collapse-btn {
+        background:none; border:1px solid rgba(100,140,255,.18); border-radius:50%;
+        width:22px; height:22px; color:rgba(140,165,230,.45); cursor:pointer;
+        font-size:11px; display:flex; align-items:center; justify-content:center;
+        flex-shrink:0; transition:transform .25s, color .15s, border-color .15s;
+        margin-left:4px;
+      }
+      #hub-collapse-btn:hover { color:#9ab4ff; border-color:rgba(100,140,255,.45); }
+      #timeline-panel.collapsed #hub-collapse-btn { transform:rotate(180deg); }
+      #timeline-panel.collapsed #timeline-controls,
+      #timeline-panel.collapsed #speed-controls,
+      #timeline-panel.collapsed #events-list { display:none !important; }
+      #timeline-controls { display:flex; align-items:center; gap:10px; }
+      #play-btn { flex-shrink:0; width:32px; height:32px; border-radius:50%; border:1.5px solid rgba(100,140,255,.38); background:rgba(100,140,255,.1); color:#9ab4ff; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:background .15s; }
+      #play-btn:hover { background:rgba(100,140,255,.2); }
+      #play-btn svg { width:12px; height:12px; fill:currentColor; }
+      #play-btn.playing { background:rgba(100,140,255,.2); border-color:rgba(100,140,255,.55); }
+      #slider-wrap { flex:1; display:flex; flex-direction:column; }
+      #timeline-slider { width:100%; -webkit-appearance:none; appearance:none; height:4px; border-radius:4px; background:rgba(100,140,255,.16); outline:none; cursor:pointer; }
+      #timeline-slider::-webkit-slider-thumb { -webkit-appearance:none; width:16px; height:16px; border-radius:50%; background:#648cff; cursor:pointer; box-shadow:0 0 8px rgba(100,140,255,.6); border:2px solid #fff; }
+      #year-labels { display:flex; justify-content:space-between; margin-top:5px; font-size:9.5px; color:rgba(140,165,230,.35); }
+      #speed-controls { display:flex; align-items:center; gap:6px; margin-top:8px; }
+      #speed-label { font-size:9px; text-transform:uppercase; letter-spacing:.1em; color:rgba(140,160,220,.35); margin-right:2px; }
+      .speed-btn { font-size:10.5px; font-weight:600; padding:2px 9px; border-radius:20px; border:1px solid rgba(100,140,255,.2); background:transparent; color:rgba(160,190,255,.4); cursor:pointer; transition:all .15s; font-family:inherit; }
+      .speed-btn:hover { background:rgba(100,140,255,.1); color:#9ab4ff; }
+      .speed-btn.active { background:rgba(100,140,255,.17); border-color:rgba(100,140,255,.5); color:#c0d4ff; }
+      #events-list { margin-top:9px; display:flex; flex-wrap:wrap; gap:5px; height:52px; overflow-y:auto; }
+      #events-list::-webkit-scrollbar { width:3px; }
+      #events-list::-webkit-scrollbar-thumb { background:rgba(100,140,255,.25); border-radius:3px; }
+      .event-chip { display:flex; align-items:center; gap:6px; font-size:10.5px; padding:3px 9px; border-radius:20px; animation:fadeIn .2s ease; white-space:nowrap; }
+      .event-chip-dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; }
+      #no-events { font-size:11px; color:rgba(140,165,230,.28); padding:3px 0; }
+      @keyframes fadeIn { from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:translateY(0)} }
+
+      /* ── Causal chain sections ────────────────────────────── */
+      .dp-causal-sec { border-radius:12px; padding:12px 14px !important; }
+      #dp-sec-precursors { background:rgba(255,150,50,0.07); border:1px solid rgba(255,150,50,0.18) !important; }
+      #dp-sec-effects    { background:rgba(50,220,170,0.07); border:1px solid rgba(50,220,170,0.18) !important; }
+      .dp-causal-hdr-cause { color:#ff9933 !important; }
+      .dp-causal-hdr-effect{ color:#33ddaa !important; }
+      .dp-causal-icon { font-size:13px; font-weight:900; margin-right:3px; }
+      .dp-causal-tag {
+        font-size:8.5px; font-weight:800; letter-spacing:.12em; padding:1px 6px;
+        border-radius:20px; margin-left:6px; vertical-align:middle; display:inline-block;
+      }
+      .dp-causal-tag-cause  { background:rgba(255,150,50,0.18); color:#ff9933; border:1px solid rgba(255,150,50,0.35); }
+      .dp-causal-tag-effect { background:rgba(50,220,170,0.18); color:#33ddaa; border:1px solid rgba(50,220,170,0.35); }
+      .dp-causal-hint {
+        font-size:10px; color:rgba(160,185,230,.42); margin:4px 0 8px; line-height:1.45;
+      }
+      .dp-causal-chips { display:flex; flex-direction:column; gap:6px; }
+      .dp-causal-chip {
+        display:flex; align-items:flex-start; gap:9px;
+        padding:8px 10px; border-radius:9px; cursor:pointer;
+        background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08);
+        transition:all .15s; text-decoration:none;
+      }
+      .dp-causal-chip:hover { background:rgba(255,255,255,0.09); border-color:rgba(255,255,255,0.18); transform:translateX(2px); }
+      .dp-causal-dot-wrap { flex-shrink:0; padding-top:3px; }
+      .dp-causal-dot { width:8px; height:8px; border-radius:50%; }
+      .dp-causal-name { font-size:11.5px; font-weight:600; color:rgba(210,225,255,.88); line-height:1.3; }
+      .dp-causal-period { font-size:9.5px; color:rgba(140,165,230,.44); margin-top:1px; }
+      .dp-causal-desc { font-size:10px; color:rgba(180,200,240,.55); margin-top:2px; line-height:1.4; }
+
+      /* Map causal link line pulse animation */
+      @keyframes dash-flow {
+        to { stroke-dashoffset: -36; }
+      }
+      .causal-line-cause  { animation: dash-flow 1.4s linear infinite; }
+      .causal-line-effect { animation: dash-flow 1.0s linear infinite; }
+
+      /* Simultaneous-event soft glow — priority 3, below cause/effect */
+      .sim-glow .ev-dot {
+        box-shadow: 0 0 10px 3px rgba(180,200,255,0.55) !important;
+        transform: scale(1.22);
+        transition: transform 0.2s, box-shadow 0.2s;
+      }
+      .sim-glow .ev-pulse { opacity: 0.5; }
+
+      /* ── Follow Thread overlay ────────────────────────────── */
+      #follow-overlay {
+        position:fixed; inset:0; z-index:900; display:flex; align-items:center; justify-content:center;
+        background:rgba(2,5,18,0.88); backdrop-filter:blur(10px);
+        opacity:0; pointer-events:none; transition:opacity .22s;
+      }
+      #follow-overlay.open { opacity:1; pointer-events:all; }
+      #follow-panel {
+        background:rgba(8,14,35,0.97); border:1px solid rgba(100,140,255,0.22);
+        border-radius:20px; width:min(860px,94vw); max-height:88vh;
+        display:flex; flex-direction:column; box-shadow:0 16px 60px rgba(0,0,50,0.7);
+        overflow:hidden;
+      }
+      #follow-hdr {
+        display:flex; justify-content:space-between; align-items:flex-start;
+        padding:22px 26px 16px; border-bottom:1px solid rgba(100,140,255,0.12);
+        flex-shrink:0;
+      }
+      #follow-title { font-size:17px; font-weight:700; color:#e0e8ff; }
+      #follow-subtitle { font-size:11.5px; color:rgba(140,165,230,0.52); margin-top:4px; }
+      #follow-close {
+        background:rgba(100,140,255,0.1); border:1px solid rgba(100,140,255,0.25);
+        color:#9ab4ff; border-radius:8px; cursor:pointer; padding:5px 11px;
+        font-size:13px; font-family:inherit; flex-shrink:0; transition:background .12s;
+      }
+      #follow-close:hover { background:rgba(100,140,255,0.2); }
+      #follow-search-wrap { padding:12px 20px 8px; flex-shrink:0; }
+      #follow-search {
+        width:100%; background:rgba(100,140,255,0.08); border:1px solid rgba(100,140,255,0.2);
+        border-radius:10px; color:#c8d8ff; font-size:12px; font-family:inherit;
+        padding:8px 14px; outline:none; transition:border-color .15s;
+      }
+      #follow-search:focus { border-color:rgba(100,140,255,0.45); }
+      #follow-body { overflow-y:auto; padding:8px 16px 20px; }
+      #follow-body::-webkit-scrollbar { width:4px; }
+      #follow-body::-webkit-scrollbar-thumb { background:rgba(100,140,255,0.22); border-radius:4px; }
+      .follow-group-hdr {
+        font-size:9px; font-weight:800; letter-spacing:.15em; text-transform:uppercase;
+        color:rgba(130,158,230,0.35); padding:12px 8px 6px;
+      }
+      .follow-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:8px; margin-bottom:4px; }
+      .follow-card {
+        background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.09);
+        border-radius:13px; padding:13px 15px; cursor:pointer; transition:all .15s;
+        display:flex; flex-direction:column; gap:5px; position:relative; overflow:hidden;
+      }
+      .follow-card:hover { background:rgba(100,140,255,0.12); border-color:rgba(100,140,255,0.35); transform:translateY(-1px); }
+      .follow-card-top { display:flex; align-items:center; justify-content:space-between; }
+      .follow-card-icon { font-size:18px; line-height:1; }
+      .follow-type-badge {
+        font-size:8px; font-weight:800; letter-spacing:.1em; padding:2px 7px;
+        border-radius:20px; text-transform:uppercase;
+      }
+      .ftb-empire  { background:rgba(255,200,50,.18); color:#ffc832; border:1px solid rgba(255,200,50,.35); }
+      .ftb-country { background:rgba(100,140,255,.18); color:#7ba3ff; border:1px solid rgba(100,140,255,.35); }
+      .ftb-war     { background:rgba(255,60,60,.18);  color:#ff5555; border:1px solid rgba(255,60,60,.35); }
+      .ftb-theme   { background:rgba(160,80,255,.18); color:#c080ff; border:1px solid rgba(160,80,255,.35); }
+      .follow-card-name { font-size:13px; font-weight:700; color:rgba(210,225,255,.9); line-height:1.2; }
+      .follow-card-desc { font-size:10.5px; color:rgba(140,165,230,.5); line-height:1.4; }
+      .follow-card-footer { display:flex; align-items:center; gap:8px; margin-top:3px; }
+      .follow-card-count { font-size:9.5px; color:rgba(140,165,230,.38); }
+      .follow-card-dots { display:flex; gap:3px; flex-wrap:wrap; }
+      .follow-card-dot  { width:5px; height:5px; border-radius:50%; opacity:0.7; }
+
+      /* ── Follow Mode bar (shown when following) ─────────── */
+      #follow-bar {
+        position:fixed; top:0; left:50%; transform:translateX(-50%);
+        z-index:700; background:rgba(8,14,35,0.95);
+        border:1px solid rgba(100,140,255,0.22); border-top:none;
+        border-radius:0 0 16px 16px; padding:9px 18px 13px;
+        display:none; align-items:center; gap:14px; min-width:560px; max-width:90vw;
+        backdrop-filter:blur(14px); box-shadow:0 8px 30px rgba(0,0,60,0.5);
+        overflow:hidden;
+      }
+      #follow-bar.visible { display:flex; }
+      #follow-bar-icon { font-size:20px; flex-shrink:0; }
+      #follow-bar-label { flex:1; }
+      #follow-bar-name  { font-size:13px; font-weight:700; color:#e0e8ff; }
+      #follow-bar-sub   { font-size:10px; color:rgba(140,165,230,0.45); margin-top:1px; }
+      #follow-bar-nav   { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+      .follow-nav-btn {
+        background:rgba(100,140,255,0.12); border:1px solid rgba(100,140,255,0.28);
+        color:#9ab4ff; border-radius:8px; cursor:pointer; padding:4px 12px;
+        font-size:11px; font-weight:600; font-family:inherit; transition:all .12s;
+      }
+      .follow-nav-btn:hover { background:rgba(100,140,255,0.25); color:#c0d4ff; }
+      .follow-nav-btn:disabled { opacity:0.3; cursor:not-allowed; }
+      #follow-nav-counter {
+        font-size:10.5px; color:rgba(160,185,255,.55); min-width:60px; text-align:center; font-weight:600;
+      }
+      #follow-exit-btn {
+        background:rgba(255,80,80,0.1); border:1px solid rgba(255,80,80,0.28);
+        color:#ff8080; border-radius:8px; cursor:pointer; padding:4px 12px;
+        font-size:11px; font-weight:600; font-family:inherit; transition:all .12s; flex-shrink:0;
+      }
+      #follow-exit-btn:hover { background:rgba(255,80,80,0.22); }
+
+      /* ── Progress bar (bottom of follow-bar) — kept for layout, hidden ─── */
+      #follow-progress-track { display:none; }
+      #follow-progress-fill {
+        height:100%; width:0%; background:linear-gradient(90deg,#6ee896,#4aafff);
+        border-radius:0 0 16px 16px;
+      }
+
+      /* ── Follow-mode event list strip ────────────────────── */
+      #follow-event-strip {
+        display:none; position:fixed; bottom:115px; left:50%; transform:translateX(-50%);
+        z-index:700; background:rgba(8,14,35,0.9); border:1px solid rgba(100,140,255,0.18);
+        border-radius:12px; padding:8px 12px; backdrop-filter:blur(10px);
+        max-width:90vw; overflow-x:auto; white-space:nowrap;
+        transition:left 0.32s cubic-bezier(.25,.8,.25,1), max-width 0.32s cubic-bezier(.25,.8,.25,1);
+      }
+      #follow-event-strip.visible { display:block; }
+      /* Shift strip left so it doesn't overlap the 420px detail panel */
+      #follow-event-strip.panel-open {
+        left: calc(50% - 210px);
+        max-width: calc(90vw - 440px);
+      }
+      #follow-event-strip::-webkit-scrollbar { height:3px; }
+      #follow-event-strip::-webkit-scrollbar-thumb { background:rgba(100,140,255,.25); border-radius:3px; }
+      .fes-item {
+        display:inline-flex; align-items:center; gap:5px; padding:3px 10px;
+        border-radius:20px; cursor:pointer; border:1px solid transparent;
+        font-size:10px; transition:all .12s; margin-right:4px; color:rgba(160,185,230,.55);
+      }
+      .fes-item.active { border-color:rgba(255,255,255,0.35) !important; color:#e0e8ff !important; }
+      .fes-item:hover { color:rgba(210,225,255,.85); }
+      .fes-dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; }
+
+      /* ── Historical region labels ─────────────────────────── */
+      .region-label {
+        background: rgba(4, 8, 22, 0.72) !important;
+        border: 1px solid rgba(255,255,255,0.12) !important;
+        border-radius: 6px !important;
+        color: rgba(220, 230, 255, 0.82) !important;
+        font-size: 10px !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.05em !important;
+        padding: 2px 7px !important;
+        pointer-events: none !important;
+        white-space: nowrap !important;
+        backdrop-filter: blur(4px);
+        box-shadow: none !important;
+        text-transform: uppercase;
+      }
+      .region-label::before { display:none !important; }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+
+    <div id="title-badge">Historical World Map — All of History</div>
+
+    <div id="legend">
+      <div id="legend-title">Event Types</div>
+      <div class="legend-item"><span class="legend-dot" style="background:#ff3333"></span>War / Battle</div>
+      <div class="legend-item"><span class="legend-dot" style="background:#3399ff"></span>Naval Battle</div>
+      <div class="legend-item"><span class="legend-dot" style="background:#ff9933"></span>Revolution / Politics</div>
+      <div class="legend-item"><span class="legend-dot" style="background:#ffee33"></span>Science / Discovery</div>
+      <div class="legend-item"><span class="legend-dot" style="background:#33ddaa"></span>Empire / Civilization</div>
+      <div class="legend-item"><span class="legend-dot" style="background:#cc66ff"></span>Disaster / Pandemic</div>
+      <button id="reset-btn">Reset View</button>
+    </div>
+
+    <div id="zoom-hint">Scroll to zoom<br>Drag to pan<br>Click events for details</div>
+
+    <div id="event-count">
+      <div id="event-count-num">0</div>
+      <div id="event-count-label">Active Events</div>
+    </div>
+
+    <!-- Rich detail panel -->
+    <div id="detail-panel">
+      <div id="dp-color-bar"></div>
+      <div id="dp-close-row"><button id="dp-close">✕</button></div>
+      <div id="dp-scroll">
+        <div id="dp-img-wrap">
+          <div id="dp-img-loading">Loading image…</div>
+          <img id="dp-img" alt="" />
+          <div id="dp-img-caption"></div>
+        </div>
+        <div id="dp-video-wrap">
+          <button id="dp-video-btn">
+            <span class="dp-vbtn-icon">▶</span>
+            <span id="dp-video-label">Watch Video</span>
+          </button>
+          <div id="dp-video-embed">
+            <iframe id="dp-video-iframe" src="" allowfullscreen
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture">
+            </iframe>
+          </div>
+        </div>
+        <div id="dp-hero">
+          <div id="dp-type-badge"></div>
+          <div id="dp-name"></div>
+          <div id="dp-period-text"></div>
+        </div>
+        <div class="dp-section" id="dp-sec-overview">
+          <div class="dp-sec-hdr">Overview</div>
+          <div class="dp-overview-text" id="dp-overview"></div>
+        </div>
+        <div class="dp-section" id="dp-sec-people" style="display:none">
+          <div class="dp-sec-hdr">Key Figures</div>
+          <div class="dp-people-grid" id="dp-people"></div>
+        </div>
+        <div class="dp-section" id="dp-sec-causes" style="display:none">
+          <div class="dp-sec-hdr">Causes</div>
+          <ul class="dp-bullet-list" id="dp-causes"></ul>
+        </div>
+        <div class="dp-section" id="dp-sec-timeline" style="display:none">
+          <div class="dp-sec-hdr">Event Timeline</div>
+          <div class="dp-tl-list" id="dp-timeline"></div>
+        </div>
+        <div class="dp-section" id="dp-sec-impact" style="display:none">
+          <div class="dp-sec-hdr">Impact & Legacy</div>
+          <ul class="dp-bullet-list" id="dp-impact"></ul>
+        </div>
+
+        <!-- Causal chain sections -->
+        <div class="dp-section dp-causal-sec" id="dp-sec-precursors" style="display:none">
+          <div class="dp-sec-hdr dp-causal-hdr-cause">
+            <span class="dp-causal-icon">←</span> What Led to This
+            <span class="dp-causal-tag dp-causal-tag-cause">CAUSES</span>
+          </div>
+          <div class="dp-causal-hint">These earlier events directly caused or enabled this one. Click to explore.</div>
+          <div class="dp-causal-chips" id="dp-precursors"></div>
+        </div>
+
+        <div class="dp-section dp-causal-sec" id="dp-sec-effects" style="display:none">
+          <div class="dp-sec-hdr dp-causal-hdr-effect">
+            <span class="dp-causal-icon">→</span> What This Led To
+            <span class="dp-causal-tag dp-causal-tag-effect">CONSEQUENCES</span>
+          </div>
+          <div class="dp-causal-hint">This event directly caused or enabled these later events. Click to explore.</div>
+          <div class="dp-causal-chips" id="dp-effects"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Country Evolution Panel -->
+    <div id="country-panel">
+      <div id="cp-color-bar"></div>
+      <div id="cp-close-row"><button id="cp-close">✕</button></div>
+      <div id="cp-scroll">
+        <div id="cp-hero">
+          <div id="cp-flag">🇺🇸</div>
+          <div id="cp-country-name">United States</div>
+          <div id="cp-year-ctx"></div>
+        </div>
+
+        <div class="cp-section">
+          <div class="cp-sec-hdr">Leadership</div>
+          <div id="cp-president-name"></div>
+          <div id="cp-president-term"></div>
+          <div id="cp-president-party"></div>
+          <div id="cp-president-note"></div>
+        </div>
+
+        <div class="cp-section">
+          <div class="cp-sec-hdr">Population</div>
+          <div id="cp-population-num"></div>
+          <div id="cp-pop-bar-wrap"><div id="cp-pop-bar"></div></div>
+          <div id="cp-pop-note"></div>
+        </div>
+
+        <div class="cp-section">
+          <div class="cp-sec-hdr">Historical Era</div>
+          <div id="cp-era-badge"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Browse Empires & Nations overlay -->
+    <div id="empires-overlay">
+      <div id="empires-panel">
+        <div id="emp-hdr">
+          <div id="emp-hdr-left">
+            <div id="emp-title">Empires &amp; Nations</div>
+            <div id="emp-subtitle">Click any to jump to it on the map</div>
+          </div>
+          <button id="emp-close">✕</button>
+        </div>
+        <div id="emp-search-wrap">
+          <input type="text" id="emp-search" placeholder="Search empires, dynasties, kingdoms…" autocomplete="off" spellcheck="false" />
+        </div>
+        <div id="emp-grid">
+          <div id="emp-no-results">No empires match your search.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Follow Thread overlay -->
+    <div id="follow-overlay">
+      <div id="follow-panel">
+        <div id="follow-hdr">
+          <div>
+            <div id="follow-title">Follow a Thread</div>
+            <div id="follow-subtitle">Choose a country, empire, war, or theme to trace through history</div>
+          </div>
+          <button id="follow-close">✕</button>
+        </div>
+        <div id="follow-search-wrap">
+          <input id="follow-search" type="text" placeholder="Search threads…" autocomplete="off">
+        </div>
+        <div id="follow-body"></div>
+      </div>
+    </div>
+
+    <!-- Follow mode active bar (top strip) -->
+    <div id="follow-bar">
+      <div id="follow-bar-icon"></div>
+      <div id="follow-bar-label">
+        <div id="follow-bar-name"></div>
+        <div id="follow-bar-sub"></div>
+      </div>
+      <div id="follow-bar-nav">
+        <button id="follow-prev-btn" class="follow-nav-btn">← Prev</button>
+        <div id="follow-nav-counter"></div>
+        <button id="follow-next-btn" class="follow-nav-btn">Next →</button>
+      </div>
+      <button id="follow-exit-btn">Exit ✕</button>
+      <div id="follow-progress-track"><div id="follow-progress-fill"></div></div>
+    </div>
+
+    <!-- Follow mode event strip (bottom pill row) -->
+    <div id="follow-event-strip"></div>
+
+    <!-- Events browser overlay -->
+    <div id="events-overlay">
+      <div id="events-panel">
+        <div id="ep-hdr">
+          <div id="ep-hdr-left">
+            <div id="ep-title">Historical Events</div>
+            <div id="ep-subtitle">Click any event to jump there and watch it unfold</div>
+          </div>
+          <button id="ep-close">✕</button>
+        </div>
+        <div id="ep-search-wrap">
+          <input type="text" id="ep-search" placeholder="Search events, eras, or keywords…" autocomplete="off" spellcheck="false" />
+        </div>
+        <div id="ep-list">
+          <div id="ep-no-results">No events match your search.</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="ui-overlay">
+      <div id="timeline-panel">
+        <div id="timeline-header">
+          <span id="timeline-title">Timeline</span>
+          <button id="browse-btn">⊟ Browse Events</button>
+          <button id="nations-btn">🌍 Empires &amp; Nations</button>
+          <button id="follow-thread-btn">⬡ Follow</button>
+          <span id="year-display">3000 BCE</span>
+          <button id="hub-collapse-btn" title="Collapse panel">▾</button>
+        </div>
+        <div id="timeline-controls">
+          <button id="play-btn" aria-label="Play">
+            <svg id="play-icon" viewBox="0 0 16 16"><path d="M4 2.5l10 5.5-10 5.5V2.5z"/></svg>
+            <svg id="pause-icon" viewBox="0 0 16 16" style="display:none"><rect x="3" y="2" width="3.5" height="12" rx="1"/><rect x="9.5" y="2" width="3.5" height="12" rx="1"/></svg>
+          </button>
+          <div id="slider-wrap">
+            <input type="range" id="timeline-slider" min="-3000" max="2025" value="-3000" step="1" />
+            <div id="year-labels">
+              <span>3000 BCE</span><span>2000 BCE</span><span>1000 BCE</span>
+              <span>1 CE</span><span>1000 CE</span><span>2000 CE</span>
+            </div>
+          </div>
+        </div>
+        <div id="speed-controls">
+          <span id="speed-label">Speed</span>
+          <button class="speed-btn" data-speed="1">0.5×</button>
+          <button class="speed-btn active" data-speed="3">1×</button>
+          <button class="speed-btn" data-speed="10">2×</button>
+          <button class="speed-btn" data-speed="50">⚡</button>
+        </div>
+        <div id="events-list">
+          <div id="no-events">Drag the slider or press play to explore history</div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="/script.js" defer></script>
+  </body>
+</html>
